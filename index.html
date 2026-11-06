@@ -1,11 +1,55 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>POS Barcode Scanner</title><style>body{font:16px system-ui;margin:0;background:#f3f6fa;color:#152238}main{max-width:540px;margin:20px auto;padding:16px}section{background:white;padding:18px;border-radius:14px}button{border:0;border-radius:9px;background:#1763c6;color:white;padding:13px;margin:6px 4px 6px 0;font:inherit}input{padding:12px;width:100%;box-sizing:border-box;font:inherit}#reader{width:100%;min-height:240px;background:#101820;border-radius:8px}#status{white-space:pre-wrap}small{color:#536478}</style></head><body><main><section><h2>Scan product barcode</h2><p>Allow camera access in Android Chrome. Hold the barcode inside the frame.</p><div id="reader"></div><p id="status">Tap Start camera.</p><button id="start">Start camera</button><button id="stop">Stop camera</button><label for="manual">Or enter barcode manually</label><input id="manual" inputmode="numeric" autocomplete="off" placeholder="Barcode"><button id="use">Use barcode</button><p><small>If the POS doesn't receive the barcode automatically, copy it and paste into the Barcode field.</small></p><button id="copy">Copy barcode</button></section></main><script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script><script>
-const request = new URLSearchParams(location.search).get('request') || '';
-let scanner=null, busy=false;const $=id=>document.getElementById(id);const status=t=>$('status').textContent=t;
-async function stop(){if(!scanner)return;const s=scanner;scanner=null;try{if(s.isScanning)await s.stop()}catch(e){}try{await s.clear()}catch(e){}}
-async function finish(code){code=String(code||'').trim();if(!code){status('Enter or scan a barcode first.');return} $('manual').value=code; await stop();let sent=false;try{if(window.opener&&!window.opener.closed){window.opener.postMessage({type:'STORE_POS_BARCODE',barcode:code,request:request},'*');sent=true}}catch(e){}status(sent?'Barcode sent to POS: '+code+'\nReturn to the POS tab and check the Barcode field. If it is empty, copy and paste manually.':'Barcode: '+code+'\nCopy it and paste into the POS.');}
-$('start').onclick=async()=>{if(busy||scanner)return;busy=true;status('Starting camera…');try{if(typeof Html5Qrcode==='undefined')throw Error('Scanner library unavailable');scanner=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.EAN_13,Html5QrcodeSupportedFormats.EAN_8,Html5QrcodeSupportedFormats.UPC_A,Html5QrcodeSupportedFormats.UPC_E,Html5QrcodeSupportedFormats.CODE_128],verbose:false});await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:250,height:130}},code=>{if(busy)return;busy=true;finish(code).finally(()=>busy=false)},()=>{});status('Camera ready. Aim at a barcode.')}catch(e){status('Camera error: '+(e.message||e));await stop()}finally{busy=false}};
-$('stop').onclick=()=>stop().then(()=>status('Camera stopped.'));
-$('use').onclick=()=>finish($('manual').value);
-$('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('manual').value);status('Copied. Return to POS and paste the barcode.')}catch(e){status('Select and copy the barcode manually.')}};
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>POS Barcode Scanner</title>
+<style>
+*{box-sizing:border-box}body{font:24px/1.4 system-ui,Arial;margin:0;background:#f3f6fa;color:#152238}main{max-width:600px;margin:0 auto;padding:12px}section{background:#fff;padding:18px;border-radius:16px}h1{font-size:30px;margin:8px 0 16px}p{margin:12px 0}#reader{width:100%;min-height:240px;background:#101820;border-radius:12px;overflow:hidden}button{width:100%;border:0;border-radius:14px;background:#1763c6;color:#fff;padding:18px 12px;margin:8px 0;font:700 26px system-ui;min-height:76px}button:disabled{opacity:.45}button.secondary{background:#e2ebf7;color:#183d70}button.primary{background:#087344;font-size:30px;min-height:96px}input{padding:16px;width:100%;border:2px solid #94aecb;border-radius:12px;font:26px system-ui;min-height:74px}label{display:block;margin:14px 0 6px;font-weight:700}#status{white-space:pre-wrap;background:#e8f0fa;padding:14px;border-radius:12px;min-height:70px;font-size:22px}#detected{font-size:30px;font-weight:800;overflow-wrap:anywhere;text-align:center;border:3px solid #c0d5eb;padding:15px;border-radius:14px;background:#f8fbff}small{color:#536478;font-size:18px}.hide{display:none!important}
+</style></head><body><main><section><h1>📷 Scan product barcode</h1><p id="modeText">Allow camera access. Aim at a barcode.</p><div id="reader"></div><p id="status" role="status">Tap Start camera.</p><button id="start">Start camera</button><button id="stop" class="secondary">Stop camera</button><label>Detected barcode</label><div id="detected">—</div><button id="add" class="primary" disabled>＋ Add Barcode</button><label for="manual">Or enter barcode manually</label><input id="manual" inputmode="numeric" autocomplete="off" placeholder="Barcode"><button id="use" class="secondary">Use typed barcode</button><button id="copy" class="secondary">Copy barcode</button><p><small>First scan transfers automatically. For the next barcode, tap Add Barcode. In Cashier, confirm Add to Cart in the POS before sending another barcode.</small></p></section></main>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script><script>
+const params=new URLSearchParams(location.search);
+const request=params.get('request')||'';
+const mode=params.get('mode')==='cashier'?'cashier':'inventory';
+const $=id=>document.getElementById(id);
+const status=t=>$('status').textContent=t;
+let scanner=null,starting=false,firstSent=false,lastDetected='',lastTime=0;
+$('modeText').textContent=mode==='cashier'?'CASHIER: Confirm each product in POS before transferring the next barcode.':'INVENTORY: First scan fills Barcode. Add Barcode replaces the unsaved value.';
+function valid(code){return /^[A-Za-z0-9-]{4,64}$/.test(code)}
+function transmit(code){
+  if(!request){status('Open the scanner using the Scan button in the POS.');return false}
+  try{
+    if(!window.opener||window.opener.closed){status('POS tab connection unavailable. Copy the barcode and paste it into POS.');return false}
+    window.opener.postMessage({type:'STORE_POS_BARCODE',barcode:code,request,mode},'*');
+    return true;
+  }catch(e){status('Unable to transfer barcode. Copy it manually.');return false}
+}
+function detected(code,manual=false){
+  code=String(code||'').trim();
+  if(!valid(code)){status('Invalid barcode. Use 4–64 letters, digits or hyphens.');return}
+  const now=Date.now();
+  // Prevent repeated camera callbacks for the same visible barcode.
+  if(!manual&&code===lastDetected&&now-lastTime<1800)return;
+  lastDetected=code;lastTime=now;
+  $('detected').textContent=code;$('manual').value=code;$('add').disabled=false;
+  if(!firstSent){
+    if(transmit(code)){firstSent=true;status('First barcode transferred: '+code+'\nReturn to POS and confirm the product. For later barcodes, tap Add Barcode.');}
+  }else status('Detected: '+code+'\nTap Add Barcode to transfer this barcode.');
+}
+async function stop(){const s=scanner;scanner=null;if(!s)return;try{if(s.isScanning)await s.stop()}catch(e){}try{await s.clear()}catch(e){}}
+$('start').onclick=async()=>{
+  if(starting||scanner)return;starting=true;status('Starting camera…');
+  try{
+    if(typeof Html5Qrcode==='undefined')throw Error('Scanner library unavailable');
+    scanner=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.EAN_13,Html5QrcodeSupportedFormats.EAN_8,Html5QrcodeSupportedFormats.UPC_A,Html5QrcodeSupportedFormats.UPC_E,Html5QrcodeSupportedFormats.CODE_128],verbose:false});
+    await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:250,height:130}},code=>detected(code),()=>{});
+    status('Camera ready. First scan transfers automatically; later scans need Add Barcode.');
+  }catch(e){status('Camera error: '+(e.message||e));await stop()}finally{starting=false}
+};
+$('stop').onclick=async()=>{await stop();status('Camera stopped.')};
+$('add').onclick=()=>{
+  const code=$('manual').value.trim();
+  if(!valid(code)){status('Enter or scan a valid barcode first.');return}
+  $('detected').textContent=code;
+  if(transmit(code)){firstSent=true;status('Add Barcode sent: '+code+'\nConfirm it in POS before sending another.');}
+};
+$('use').onclick=()=>detected($('manual').value,true);
+$('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('manual').value);status('Barcode copied. Paste into POS.')}catch(e){status('Select the barcode text and copy manually.')}};
 window.addEventListener('pagehide',()=>{stop()});
 </script></body></html>
